@@ -1,10 +1,11 @@
 package com.gom.bus_tracker.dto;
 
-import lombok.Data;
+public record BusPositionDTO(
+        String ordem,
+        String linha,
+        String longitude,
+        String latitude
+) {}
 
-@Data
-public class BusPositionDTO {
-    private String latitude;
-    private String longitude;
-    private String linha;
-}
+
+
