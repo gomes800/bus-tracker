@@ -19,7 +19,7 @@ public class BusController {
 
     @GetMapping("/positions")
     public ResponseEntity<List<BusPositionDTO>> getBusPositions() {
-        List<BusPositionDTO> positions = busService.getCurrentBusPositions();
+        List<BusPositionDTO> positions = busService.getCurrentBusPositionsFromCache();
         return ResponseEntity.ok(positions);
     }
 
