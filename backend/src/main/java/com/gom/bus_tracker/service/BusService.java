@@ -2,6 +2,7 @@ package com.gom.bus_tracker.service;
 
 import com.gom.bus_tracker.client.BusClient;
 import com.gom.bus_tracker.dto.BusPositionDTO;
+import com.gom.bus_tracker.dto.BusRawDTO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.Cacheable;
@@ -12,6 +13,7 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
@@ -37,22 +39,56 @@ public class BusService {
         String dataInicial = secondsAgo.format(formatter);
         String dataFinal = now.format(formatter);
 
-        List<BusPositionDTO> newData = busClient.getBusPositions(dataInicial, dataFinal).stream()
+        List<BusRawDTO> rawData = busClient.getBusPositions(dataInicial, dataFinal);
+
+        Map<String, BusPositionDTO> latestPerBus = rawData.stream()
                 .map(bus -> new BusPositionDTO(
-                        bus.ordem(),
-                        bus.linha(),
-                        convertCoordinate(bus.longitude()),
-                        convertCoordinate(bus.latitude())
+                        bus.getOrdem(),
+                        bus.getLinha(),
+                        convertCoordinate(bus.getLongitude()),
+                        convertCoordinate(bus.getLatitude()),
+                        bus.getDatahoraservidor()
                 ))
-                .collect(Collectors.toList());
+                .filter(dto -> dto.datahoraservidor() != null && !dto.datahoraservidor().isBlank())
+                .collect(Collectors.toMap(
+                        BusPositionDTO::ordem,
+                        dto -> dto,
+                        (dto1, dto2) -> {
+                            long t1 = parseTimestamp(dto1.datahoraservidor());
+                            long t2 = parseTimestamp(dto2.datahoraservidor());
+                            return t1 >= t2 ? dto1 : dto2;
+                        }
+                ));
 
-        cacheManager.getCache("bus-data").put("bus-data", newData);
+        Map<String, List<BusPositionDTO>> byLine = latestPerBus.values().stream()
+                .collect(Collectors.groupingBy(BusPositionDTO::linha));
 
+        byLine.forEach((line, list) -> {
+            String key = "bus-data::" + line;
+            cacheManager.getCache("bus-data").put(key, list);
+        });
+    }
+
+    private long parseTimestamp(String value) {
+        try {
+            return Long.parseLong(value);
+        } catch (Exception e) {
+            return 0L;
+        }
     }
 
     public List<BusPositionDTO> getCurrentBusPositionsFromCache() {
         return cacheManager.getCache("bus-data")
                 .get("bus-data", List.class);
+    }
+
+    public List<BusPositionDTO> getPositionByLine(String line) {
+        String key = "bus-data::" + line;
+
+        List<BusPositionDTO> cached = cacheManager.getCache("bus-data")
+                .get(key, List.class);
+
+        return cached != null ? cached :List.of();
     }
 
     @Scheduled(fixedRate = 30000)

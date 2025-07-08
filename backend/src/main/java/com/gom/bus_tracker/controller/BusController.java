@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -18,9 +19,8 @@ public class BusController {
     private BusService busService;
 
     @GetMapping("/positions")
-    public ResponseEntity<List<BusPositionDTO>> getBusPositions() {
-        List<BusPositionDTO> positions = busService.getCurrentBusPositionsFromCache();
-        return ResponseEntity.ok(positions);
+    public ResponseEntity<List<BusPositionDTO>> getBusPositionsByLine(@RequestParam String line) {
+        return ResponseEntity.ok(busService.getPositionByLine(line));
     }
 
 }

@@ -16,7 +16,7 @@ public class FeignConfig {
         MappingJackson2HttpMessageConverter converter = new MappingJackson2HttpMessageConverter();
         converter.setSupportedMediaTypes(List.of(
                 MediaType.APPLICATION_JSON,
-                MediaType.TEXT_HTML // <- isso é o que resolve o problema!
+                MediaType.TEXT_HTML
         ));
 
         HttpMessageConverters converters = new HttpMessageConverters(converter);
