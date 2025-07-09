@@ -5,13 +5,14 @@ import com.gom.bus_tracker.dto.BusPositionDTO;
 import com.gom.bus_tracker.dto.BusRawDTO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.CacheManager;
-import org.springframework.cache.annotation.Cacheable;
-import org.springframework.http.ResponseEntity;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Recover;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -32,6 +33,11 @@ public class BusService {
     }
 
 
+    @Retryable(
+            retryFor = { Exception.class },
+            maxAttempts = 3,
+            backoff = @Backoff(delay = 3000)
+    )
     public void updateCache() {
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime secondsAgo = now.minusSeconds(15);
@@ -67,6 +73,13 @@ public class BusService {
             String key = "bus-data::" + line;
             cacheManager.getCache("bus-data").put(key, list);
         });
+
+        System.out.println("Cache atualizado.");
+    }
+
+    @Recover
+    public void recover(Exception ex) {
+        System.err.println("Falha ao atualizar os dados: " + ex.getMessage());
     }
 
     private long parseTimestamp(String value) {
