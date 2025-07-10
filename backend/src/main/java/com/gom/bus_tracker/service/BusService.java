@@ -5,14 +5,13 @@ import com.gom.bus_tracker.dto.BusPositionDTO;
 import com.gom.bus_tracker.dto.BusRawDTO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.CacheManager;
-import org.springframework.retry.annotation.Backoff;
-import org.springframework.retry.annotation.Recover;
-import org.springframework.retry.annotation.Retryable;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -27,26 +26,35 @@ public class BusService {
     private CacheManager cacheManager;
 
     private final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final long MAX_AGE_MS = 2 * 60 * 1000;
 
     private String convertCoordinate(String coord) {
         return coord.replace(",", ".");
     }
 
+    @Scheduled(fixedRate = 25000)
+    public void updatePeriodically() {
+        updateCache();
+    }
 
-    @Retryable(
-            retryFor = { Exception.class },
-            maxAttempts = 3,
-            backoff = @Backoff(delay = 3000)
-    )
     public void updateCache() {
+        List<BusRawDTO> rawData = fetchRawBusData();
+        Map<String, List<BusPositionDTO>> groupedNewData = groupNewBusDataByLine(rawData);
+        groupedNewData.forEach(this::mergeAndStoreLineData);
+        System.out.println("Cache atualizado.");
+    }
+
+    private List<BusRawDTO> fetchRawBusData() {
         LocalDateTime now = LocalDateTime.now();
-        LocalDateTime secondsAgo = now.minusSeconds(15);
+        LocalDateTime secondsAgo = now.minusSeconds(30);
 
         String dataInicial = secondsAgo.format(formatter);
         String dataFinal = now.format(formatter);
 
-        List<BusRawDTO> rawData = busClient.getBusPositions(dataInicial, dataFinal);
+        return busClient.getBusPositions(dataInicial, dataFinal);
+    }
 
+    private Map<String, List<BusPositionDTO>> groupNewBusDataByLine(List<BusRawDTO> rawData) {
         Map<String, BusPositionDTO> latestPerBus = rawData.stream()
                 .map(bus -> new BusPositionDTO(
                         bus.getOrdem(),
@@ -59,53 +67,76 @@ public class BusService {
                 .collect(Collectors.toMap(
                         BusPositionDTO::ordem,
                         dto -> dto,
-                        (dto1, dto2) -> {
-                            long t1 = parseTimestamp(dto1.datahoraservidor());
-                            long t2 = parseTimestamp(dto2.datahoraservidor());
-                            return t1 >= t2 ? dto1 : dto2;
-                        }
+                        this::mostRecent
                 ));
 
-        Map<String, List<BusPositionDTO>> byLine = latestPerBus.values().stream()
+        return latestPerBus.values().stream()
                 .collect(Collectors.groupingBy(BusPositionDTO::linha));
-
-        byLine.forEach((line, list) -> {
-            String key = "bus-data::" + line;
-            cacheManager.getCache("bus-data").put(key, list);
-        });
-
-        System.out.println("Cache atualizado.");
     }
 
-    @Recover
-    public void recover(Exception ex) {
-        System.err.println("Falha ao atualizar os dados: " + ex.getMessage());
+    private void mergeAndStoreLineData(String line, List<BusPositionDTO> newList) {
+        String key = "bus-data::" + line;
+        List<BusPositionDTO> oldList = getCachedLineData(key);
+
+        Map<String, BusPositionDTO> merged = new HashMap<>();
+
+        for (BusPositionDTO dto : oldList) {
+            if (isRecent(dto.datahoraservidor())) {
+                merged.put(dto.ordem(), dto);
+            }
+        }
+
+        for (BusPositionDTO dto : newList) {
+            merged.put(dto.ordem(), dto);
+        }
+
+        cacheManager.getCache("bus-data").put(key, new ArrayList<>(merged.values()));
     }
 
-    private long parseTimestamp(String value) {
+    private List<BusPositionDTO> getCachedLineData(String key) {
+        List<BusPositionDTO> list = cacheManager.getCache("bus-data").get(key, List.class);
+        if (list == null) return List.of();
+        return list.stream()
+                .filter(item -> item instanceof BusPositionDTO)
+                .map(item -> (BusPositionDTO) item)
+                .toList();
+    }
+
+    private boolean isRecent(String timestamp) {
         try {
-            return Long.parseLong(value);
+            long ts = Long.parseLong(timestamp);
+            return System.currentTimeMillis() - ts <= MAX_AGE_MS;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private BusPositionDTO mostRecent(BusPositionDTO dto1, BusPositionDTO dto2) {
+        long t1 = parseTimestamp(dto1.datahoraservidor());
+        long t2 = parseTimestamp(dto2.datahoraservidor());
+        return t1 >= t2 ? dto1 : dto2;
+    }
+
+    private long parseTimestamp(String ts) {
+        try {
+            return Long.parseLong(ts);
         } catch (Exception e) {
             return 0L;
         }
     }
 
-    public List<BusPositionDTO> getCurrentBusPositionsFromCache() {
-        return cacheManager.getCache("bus-data")
-                .get("bus-data", List.class);
-    }
-
     public List<BusPositionDTO> getPositionByLine(String line) {
         String key = "bus-data::" + line;
-
         List<BusPositionDTO> cached = cacheManager.getCache("bus-data")
                 .get(key, List.class);
 
-        return cached != null ? cached :List.of();
-    }
+        if (cached == null) {
+            return List.of();
+        }
 
-    @Scheduled(fixedRate = 30000)
-    public void updatePeriodically() {
-        updateCache();
+        return cached.stream()
+                .filter(item -> item instanceof BusPositionDTO)
+                .map(item -> (BusPositionDTO) item)
+                .toList();
     }
 }
