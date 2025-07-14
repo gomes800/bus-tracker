@@ -4,17 +4,13 @@ import com.gom.bus_tracker.client.BusClient;
 import com.gom.bus_tracker.dto.BusPositionDTO;
 import com.gom.bus_tracker.dto.BusRawDTO;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.cache.CacheManager;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class BusService {
@@ -23,10 +19,15 @@ public class BusService {
     private BusClient busClient;
 
     @Autowired
-    private CacheManager cacheManager;
+    private RedisTemplate<String, BusPositionDTO> redisBusTemplate;
+
+    @Autowired
+    private RedisTemplate<String, String> redisStringTemplate;
 
     private final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final long MAX_AGE_MS = 2 * 60 * 1000;
+    private static final String BUS_KEY_PREFIX = "bus::";
+    private static final String LINE_KEY_PREFIX = "line-buses::";
 
     private String convertCoordinate(String coord) {
         return coord.replace(",", ".");
@@ -39,14 +40,13 @@ public class BusService {
 
     public void updateCache() {
         List<BusRawDTO> rawData = fetchRawBusData();
-        Map<String, List<BusPositionDTO>> groupedNewData = groupNewBusDataByLine(rawData);
-        groupedNewData.forEach(this::mergeAndStoreLineData);
+        processAndStoreBusData(rawData);
         System.out.println("Cache atualizado.");
     }
 
     private List<BusRawDTO> fetchRawBusData() {
         LocalDateTime now = LocalDateTime.now();
-        LocalDateTime secondsAgo = now.minusSeconds(30);
+        LocalDateTime secondsAgo = now.minusSeconds(120);
 
         String dataInicial = secondsAgo.format(formatter);
         String dataFinal = now.format(formatter);
@@ -54,52 +54,47 @@ public class BusService {
         return busClient.getBusPositions(dataInicial, dataFinal);
     }
 
-    private Map<String, List<BusPositionDTO>> groupNewBusDataByLine(List<BusRawDTO> rawData) {
-        Map<String, BusPositionDTO> latestPerBus = rawData.stream()
-                .map(bus -> new BusPositionDTO(
-                        bus.getOrdem(),
-                        bus.getLinha(),
-                        convertCoordinate(bus.getLongitude()),
-                        convertCoordinate(bus.getLatitude()),
-                        bus.getDatahoraservidor()
-                ))
-                .filter(dto -> dto.datahoraservidor() != null && !dto.datahoraservidor().isBlank())
-                .collect(Collectors.toMap(
-                        BusPositionDTO::ordem,
-                        dto -> dto,
-                        this::mostRecent
-                ));
+    private void processAndStoreBusData(List<BusRawDTO> rawData) {
+        Map<String, BusPositionDTO> latestBusMap = new HashMap<>();
 
-        return latestPerBus.values().stream()
-                .collect(Collectors.groupingBy(BusPositionDTO::linha));
-    }
+        for (BusRawDTO bus : rawData) {
+            String ordem = bus.getOrdem();
+            BusPositionDTO newPosition = new BusPositionDTO(
+                    ordem,
+                    bus.getLinha(),
+                    convertCoordinate(bus.getLongitude()),
+                    convertCoordinate(bus.getLatitude()),
+                    bus.getDatahoraservidor()
+            );
 
-    private void mergeAndStoreLineData(String line, List<BusPositionDTO> newList) {
-        String key = "bus-data::" + line;
-        List<BusPositionDTO> oldList = getCachedLineData(key);
-
-        Map<String, BusPositionDTO> merged = new HashMap<>();
-
-        for (BusPositionDTO dto : oldList) {
-            if (isRecent(dto.datahoraservidor())) {
-                merged.put(dto.ordem(), dto);
+            BusPositionDTO existing = latestBusMap.get(ordem);
+            if (existing == null || isNewer(newPosition, existing)) {
+                latestBusMap.put(ordem, newPosition);
             }
         }
 
-        for (BusPositionDTO dto : newList) {
-            merged.put(dto.ordem(), dto);
+        for (BusPositionDTO bus : latestBusMap.values()) {
+            updateBusPosition(bus);
         }
-
-        cacheManager.getCache("bus-data").put(key, new ArrayList<>(merged.values()));
     }
 
-    private List<BusPositionDTO> getCachedLineData(String key) {
-        List<BusPositionDTO> list = cacheManager.getCache("bus-data").get(key, List.class);
-        if (list == null) return List.of();
-        return list.stream()
-                .filter(item -> item instanceof BusPositionDTO)
-                .map(item -> (BusPositionDTO) item)
-                .toList();
+    private void updateBusPosition(BusPositionDTO newPosition) {
+        String busKey = BUS_KEY_PREFIX + newPosition.ordem();
+        String lineKey = LINE_KEY_PREFIX + newPosition.linha();
+
+        BusPositionDTO existing = redisBusTemplate.opsForValue().get(busKey);
+
+        if (existing == null || isNewer(newPosition, existing)) {
+            redisBusTemplate.opsForValue().set(busKey, newPosition, MAX_AGE_MS, TimeUnit.MILLISECONDS);
+            redisStringTemplate.opsForSet().add(lineKey, newPosition.ordem());
+            redisStringTemplate.expire(lineKey, MAX_AGE_MS, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private boolean isNewer(BusPositionDTO newBus, BusPositionDTO existingBus) {
+        long newTs = parseTimestamp(newBus.datahoraservidor());
+        long existingTs = parseTimestamp(existingBus.datahoraservidor());
+        return newTs > existingTs;
     }
 
     private boolean isRecent(String timestamp) {
@@ -111,12 +106,6 @@ public class BusService {
         }
     }
 
-    private BusPositionDTO mostRecent(BusPositionDTO dto1, BusPositionDTO dto2) {
-        long t1 = parseTimestamp(dto1.datahoraservidor());
-        long t2 = parseTimestamp(dto2.datahoraservidor());
-        return t1 >= t2 ? dto1 : dto2;
-    }
-
     private long parseTimestamp(String ts) {
         try {
             return Long.parseLong(ts);
@@ -126,17 +115,21 @@ public class BusService {
     }
 
     public List<BusPositionDTO> getPositionByLine(String line) {
-        String key = "bus-data::" + line;
-        List<BusPositionDTO> cached = cacheManager.getCache("bus-data")
-                .get(key, List.class);
+        String lineKey = LINE_KEY_PREFIX + line;
+        Set<String> busOrders = redisStringTemplate.opsForSet().members(lineKey);
 
-        if (cached == null) {
-            return List.of();
+        if (busOrders == null || busOrders.isEmpty()) {
+            return Collections.emptyList();
         }
 
-        return cached.stream()
-                .filter(item -> item instanceof BusPositionDTO)
-                .map(item -> (BusPositionDTO) item)
-                .toList();
+        List<BusPositionDTO> positions = new ArrayList<>();
+        for (String ordem : busOrders) {
+            BusPositionDTO bus = redisBusTemplate.opsForValue().get(BUS_KEY_PREFIX + ordem);
+            if (bus != null && isRecent(bus.datahoraservidor())) {
+                positions.add(bus);
+            }
+        }
+
+        return positions;
     }
 }
