@@ -78,33 +78,29 @@ import * as L from 'leaflet';
 
       .input-group {
         display: flex;
-        gap: 6px;
+        gap: 8px;
         width: 100%;
-        align-items: center;
-        min-height: 36px;
       }
 
       .line-input {
         flex: 1;
-        padding: 8px 10px;
+        padding: 12px 16px;
         border: none;
-        border-radius: 6px;
-        font-size: 15px;
-        background: rgba(255, 255, 255, 0.95);
-        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
-        height: 36px;
-        min-width: 0;
+        border-radius: 8px;
+        font-size: 16px;
+        background: rgba(255, 255, 255, 0.9);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
       }
 
       .line-input:focus {
         outline: none;
         background: white;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
       }
 
       .button-group {
         display: flex;
-        gap: 6px;
+        gap: 8px;
         flex-wrap: wrap;
       }
 
@@ -113,40 +109,37 @@ import * as L from 'leaflet';
       .refresh-btn {
         display: flex;
         align-items: center;
-        gap: 6px;
-        padding: 8px 12px;
+        gap: 8px;
+        padding: 12px 16px;
         border: none;
-        border-radius: 6px;
+        border-radius: 8px;
         cursor: pointer;
-        font-size: 13px;
+        font-size: 14px;
         font-weight: 600;
-        transition: all 0.2s ease;
-        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
-        height: 36px;
-        min-width: 0;
+        transition: all 0.3s ease;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
       }
 
       .load-btn {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
-        min-width: 80px;
+        min-width: 100px;
       }
 
       .load-btn:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.13);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
       }
 
       .location-btn {
         background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
         color: white;
         flex: 1;
-        min-width: 80px;
       }
 
       .location-btn:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.13);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
       }
 
       .refresh-btn {
@@ -264,7 +257,7 @@ export class MapComponent implements OnInit, OnDestroy {
   @Input() selectedLine: string = '';
 
   private map!: L.Map;
-  private busMarkers: Map<string, L.Marker> = new Map();
+  private busMarkers: L.Marker[] = [];
   private userMarker?: L.Marker;
   private autoRefreshSubscription?: Subscription;
   public autoRefresh = false;
@@ -369,81 +362,49 @@ export class MapComponent implements OnInit, OnDestroy {
   }
 
   private clearBusMarkers() {
+    console.log('Limpando marcadores antigos:', this.busMarkers.length);
     this.busMarkers.forEach((marker) => {
       this.map.removeLayer(marker);
     });
-    this.busMarkers.clear();
+    this.busMarkers = [];
   }
 
   private addBusMarkers(busPositions: BusPosition[]) {
-    // Marcar todas as ordens recebidas
-    const receivedOrdens = new Set(busPositions.map((b) => b.ordem));
+    console.log('Adicionando marcadores:', busPositions);
+    console.log('Adding bus markers for', busPositions.length, 'buses');
 
-    // Remover marcadores de ônibus que não estão mais presentes
-    this.busMarkers.forEach((marker, ordem) => {
-      if (!receivedOrdens.has(ordem)) {
-        this.map.removeLayer(marker);
-        this.busMarkers.delete(ordem);
-      }
-    });
-
-    busPositions.forEach((bus) => {
+    busPositions.forEach((bus, index) => {
+      console.log(`Bus ${index + 1}:`, bus);
       const lat = parseFloat(bus.latitude);
       const lng = parseFloat(bus.longitude);
-      if (isNaN(lat) || isNaN(lng)) return;
 
-      // SVG de ônibus
-      const busIcon = L.divIcon({
-        className: 'bus-marker',
-        html: `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="5" width="18" height="12" rx="3" fill="#007bff" stroke="#fff" stroke-width="2"/><rect x="6" y="8" width="4" height="3" rx="1" fill="#fff"/><rect x="14" y="8" width="4" height="3" rx="1" fill="#fff"/><circle cx="7.5" cy="18" r="2" fill="#333"/><circle cx="16.5" cy="18" r="2" fill="#333"/></svg>`,
-        iconSize: [28, 28],
-        iconAnchor: [14, 14],
-      });
+      console.log(`Parsed coordinates: lat=${lat}, lng=${lng}`);
 
-      const ordem = bus.ordem;
-      const existingMarker = this.busMarkers.get(ordem);
-      if (existingMarker) {
-        // Animar suavemente para nova posição
-        this.smoothMoveMarker(existingMarker, lat, lng);
-        existingMarker.setPopupContent(`
-          <strong>Ônibus ${bus.ordem}</strong><br>
-          Linha: ${bus.linha}<br>
-          Horário: ${bus.datahoraservidor}
-        `);
-      } else {
-        // Novo marcador
+      if (!isNaN(lat) && !isNaN(lng)) {
+        const busIcon = L.divIcon({
+          className: 'bus-marker',
+          html: '<div style="background-color: #dc3545; width: 16px; height: 16px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 5px rgba(0,0,0,0.3);"></div>',
+          iconSize: [16, 16],
+          iconAnchor: [8, 8],
+        });
+
         const marker = L.marker([lat, lng], { icon: busIcon }).addTo(this.map)
           .bindPopup(`
             <strong>Ônibus ${bus.ordem}</strong><br>
             Linha: ${bus.linha}<br>
             Horário: ${bus.datahoraservidor}
           `);
-        this.busMarkers.set(ordem, marker);
+
+        this.busMarkers.push(marker);
+        console.log(`Added marker for bus ${bus.ordem} at [${lat}, ${lng}]`);
+      } else {
+        console.warn(
+          `Invalid coordinates for bus ${bus.ordem}: lat=${bus.latitude}, lng=${bus.longitude}`
+        );
       }
     });
-  }
 
-  // Função para animar suavemente o marcador até a nova posição
-  private smoothMoveMarker(marker: L.Marker, newLat: number, newLng: number) {
-    const duration = 1000; // ms
-    const steps = 20;
-    const delay = duration / steps;
-    const start = marker.getLatLng();
-    const latStep = (newLat - start.lat) / steps;
-    const lngStep = (newLng - start.lng) / steps;
-    let currentStep = 0;
-    const move = () => {
-      if (currentStep < steps) {
-        const lat = start.lat + latStep * currentStep;
-        const lng = start.lng + lngStep * currentStep;
-        marker.setLatLng([lat, lng]);
-        currentStep++;
-        setTimeout(move, delay);
-      } else {
-        marker.setLatLng([newLat, newLng]);
-      }
-    };
-    move();
+    console.log('Total markers added:', this.busMarkers.length);
   }
 
   toggleAutoRefresh() {
